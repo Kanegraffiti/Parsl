@@ -7,16 +7,15 @@ import queue
 import time
 from multiprocessing import Event, Process
 from multiprocessing.queues import Queue
-from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Literal, Optional, Tuple, Union, cast
 
 import typeguard
 
 from parsl.log_utils import set_file_logger
 from parsl.monitoring.errors import MonitoringHubStartError
-from parsl.monitoring.message_type import MessageType
 from parsl.monitoring.radios import MultiprocessingQueueRadioSender
 from parsl.monitoring.router import router_starter
-from parsl.monitoring.types import AddressedMonitoringMessage
+from parsl.monitoring.types import TaggedMonitoringMessage
 from parsl.multiprocessing import ForkProcess, SizedQueue
 from parsl.process_loggers import wrap_with_logs
 from parsl.serialize import deserialize
@@ -138,7 +137,7 @@ class MonitoringHub(RepresentationMixin):
         self.exception_q: Queue[Tuple[str, str]]
         self.exception_q = SizedQueue(maxsize=10)
 
-        self.resource_msgs: Queue[Union[AddressedMonitoringMessage, Tuple[Literal["STOP"], Literal[0]]]]
+        self.resource_msgs: Queue[Union[TaggedMonitoringMessage, Literal["STOP"]]]
         self.resource_msgs = SizedQueue()
 
         self.router_exit_event: ms.Event
@@ -202,10 +201,9 @@ class MonitoringHub(RepresentationMixin):
 
         self.hub_zmq_port = zmq_port
 
-    # TODO: tighten the Any message format
-    def send(self, mtype: MessageType, message: Any) -> None:
-        logger.debug("Sending message type {}".format(mtype))
-        self.radio.send((mtype, message))
+    def send(self, message: TaggedMonitoringMessage) -> None:
+        logger.debug("Sending message type {}".format(message[0]))
+        self.radio.send(message)
 
     def close(self) -> None:
         logger.info("Terminating Monitoring Hub")
@@ -237,7 +235,7 @@ class MonitoringHub(RepresentationMixin):
             logger.debug("Finished waiting for router termination")
             if len(exception_msgs) == 0:
                 logger.debug("Sending STOP to DBM")
-                self.resource_msgs.put(("STOP", 0))
+                self.resource_msgs.put("STOP")
             else:
                 logger.debug("Not sending STOP to DBM, because there were DBM exceptions")
             logger.debug("Waiting for DB termination")
@@ -261,7 +259,7 @@ class MonitoringHub(RepresentationMixin):
 
 
 @wrap_with_logs
-def filesystem_receiver(logdir: str, q: "queue.Queue[AddressedMonitoringMessage]", run_dir: str) -> None:
+def filesystem_receiver(logdir: str, q: "queue.Queue[TaggedMonitoringMessage]", run_dir: str) -> None:
     logger = set_file_logger("{}/monitoring_filesystem_radio.log".format(logdir),
                              name="monitoring_filesystem_radio",
                              level=logging.INFO)
@@ -288,7 +286,7 @@ def filesystem_receiver(logdir: str, q: "queue.Queue[AddressedMonitoringMessage]
                     message = deserialize(f.read())
                 logger.debug(f"Message received is: {message}")
                 assert isinstance(message, tuple)
-                q.put(cast(AddressedMonitoringMessage, message))
+                q.put(cast(TaggedMonitoringMessage, message))
                 os.remove(full_path_filename)
             except Exception:
                 logger.exception(f"Exception processing {filename} - probably will be retried next iteration")
